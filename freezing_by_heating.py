@@ -62,7 +62,7 @@ class Simulation:
     def __init__(self, initial_state, n_positive,
                  desired_speed, desired_direction, relaxation_time,
                  noise_amplitude, param_factor, param_exponent, core_diameter,
-                 walls, gradient_step, particle_mass):
+                 walls, gradient_step, particle_mass, in_core_force):
 
         self.initial_state = initial_state
         self.desired_speed = desired_speed
@@ -75,6 +75,7 @@ class Simulation:
         self.particle_mass = particle_mass
         self.gradient_step = gradient_step
         self.walls = walls
+        self.in_core_force = in_core_force
 
         self.n_particles = self.initial_state.shape[1]
         self.n_positive = n_positive
@@ -116,8 +117,16 @@ class Simulation:
             # one could exclude here the i=j case (see paper) but the
             # contribution is 0 anyway.
             for second_position in positions:
+                particles_distance = np.linalg.norm(second_position - position)
+                if particles_distance <= self.core_diameter:
+                    summed += self.in_core_force
+                    continue
+                if particles_distance < self.gradient_step / 2:
+                    step = particles_distance
+                else:
+                    step = self.gradient_step
                 summed += - calc_gradient(self._ppi_before_gradient, position,
-                                          self.gradient_step, second_position)
+                                          step, second_position)
             output[ii] = summed
         return output
 
