@@ -5,6 +5,7 @@
 
 import numpy as np
 from scipy.integrate import solve_ivp
+import matplotlib.pyplot as plt
 
 
 def central_difference_derivative(function, x_0, h):
@@ -20,32 +21,7 @@ def calc_gradient(function, vec_val, h, *args):
     return gradient
 
 
-# later use `functools.partial` to set parameters (width, length)
-def straight_corridor_walls(position, corridor_width):
-    """ """
-    return min(position[1], corridor_width - position[1])
-
-
-def straight_corridor_periodic(state, corridor_length):
-    """ """
-    np.mod(state, corridor_length, where=[True, False], out=state)
-    return state
-
-
-def straight_corridor_direction(_position):
-    return np.array([1, 0])
-
-
-def distance_sc_periodic(position_1, position_2, corridor_length):
-    distance_1 = np.linalg.norm(position_2 - position_1)
-    if position_2[0] < position_1[0]:
-        distance_2 = position_2[0] + (corridor_length - position_1[0])
-    else:
-        distance_2 = position_1[0] + (corridor_length - position_2[0])
-    return min(distance_1, distance_2)
-
-
-class Simulation:
+class SimulationStraightCorridor:
     """
     Some attributes:
         initial_state(np.ndarray[dim=3]): Describes particles positions
@@ -56,29 +32,14 @@ class Simulation:
           * x[0][n][1] is x_y of the n-th particle.
           Particles with a positive desired velocity come first.
         n_positive: Number of particles with the desired velocity > 0.
-        walls(Callable[[np.ndarray], float]): For a given particle
-          position should return the shortest distance to the nearest
-          wall.
-        boundary_condition(Callable[[np.ndarray], np.ndarray]): Takes a
-          state (as defined for initial_state) and returns an adapted
-          state that satisfies the boundary conditions.
-        desired_direction(Callable[[np.ndarray], np.ndarray]): For a
-          given position returns a unit vector pointing in the direction
-          of the desired movement (for particles with a positive desired
-          velocity).
-        distance(Callable[[np.ndarray, np.ndarray], float]):
-          Calculates distance b/w two particles. Takes positions as
-          arguments
     """
-    def __init__(self, initial_state, n_positive,
-                 desired_speed, desired_direction, relaxation_time,
-                 noise_amplitude, param_factor, param_exponent, core_diameter,
-                 walls, gradient_step, particle_mass, in_core_force,
-                 distance):
+    def __init__(self, initial_state, n_positive, desired_speed,
+                 relaxation_time, noise_amplitude, param_factor,
+                 param_exponent, core_diameter, gradient_step, particle_mass,
+                 in_core_force, **kwargs):
 
         self.initial_state = initial_state
         self.desired_speed = desired_speed
-        self.desired_direction = desired_direction
         self.relaxation_time = relaxation_time
         self.noise_amplitude = noise_amplitude
         self.param_factor = param_factor
@@ -86,9 +47,9 @@ class Simulation:
         self.core_diameter = core_diameter
         self.particle_mass = particle_mass
         self.gradient_step = gradient_step
-        self.walls = walls
         self.in_core_force = in_core_force
-        self.distance = distance
+
+        self.setup_params = kwargs
 
         self.n_particles = self.initial_state.shape[1]
         self.n_positive = n_positive
@@ -103,22 +64,64 @@ class Simulation:
         self.efficiencies = None
 # use numpy ravel for solver
 
+    def _walls(self, position):
+        """
+
+        For a given particle position should return the shortest
+        distance to the nearest wall.
+        """
+        return min(position[1],
+                   self.setup_params['corridor_width'] - position[1])
+
+    def _boundary_condition(self, state):
+        """
+
+        Takes a state (as defined for initial_state) and returns an
+        adapted state that satisfies the boundary conditions.
+        """
+        np.mod(state, self.setup_params['corridor_length'],
+               where=[True, False], out=state)
+        return state
+
+    @staticmethod
+    def _desired_direction(_position):
+        """
+
+        For a given position returns a unit vector pointing in the
+        direction of the desired movement (for particles with a positive
+        desired velocity).
+        """
+        return np.array([1, 0])
+
+    def _distance(self, position_1, position_2):
+        """Calculates _distance b/w two particles.
+
+        Takes positions as arguments.
+        """
+        corridor_length = self.setup_params['corridor_length']
+        distance_1 = np.linalg.norm(position_2 - position_1)
+        if position_2[0] < position_1[0]:
+            distance_2 = position_2[0] + (corridor_length - position_1[0])
+        else:
+            distance_2 = position_1[0] + (corridor_length - position_2[0])
+        return min(distance_1, distance_2)
+
     def _particle_drive(self, momenta, orientation):
-        desired_momentum = (self.desired_direction * self.desired_speed
+        desired_momentum = (self._desired_direction * self.desired_speed
                             * orientation * self.particle_mass)
         vectors = momenta - desired_momentum  # along 2nd axis of momenta
         vectors *= 1 / self.relaxation_time
         return vectors
 
     def _ppi_before_gradient(self, position, second_position):
-        particles_distance = self.distance(position, second_position)
+        particles_distance = self._distance(position, second_position)
         value = particles_distance - self.core_diameter / 2
         value = value**(-1 * self.param_exponent)
         value *= self.param_factor
         return value
 
     def _pbi_before_gradient(self, position):
-        value = self.walls(position) - self.core_diameter / 2
+        value = self._walls(position) - self.core_diameter / 2
         value = value**(-1 * self.param_exponent)
         value *= self.param_factor
         return value
@@ -130,7 +133,7 @@ class Simulation:
             # one could exclude here the i=j case (see paper) but the
             # contribution is 0 anyway.
             for second_position in positions:
-                particles_distance = self.distance(second_position, position)
+                particles_distance = self._distance(second_position, position)
                 if particles_distance <= self.core_diameter:
                     summed += self.in_core_force
                     continue
@@ -147,7 +150,7 @@ class Simulation:
         output = np.zeros_like(positions)
         for ii, position in enumerate(positions):
             # Avoid going behind the walls while calculating the derivative.
-            distance = self.walls(position)
+            distance = self._walls(position)
             if distance < self.gradient_step / 2:
                 step = distance
             else:
@@ -171,11 +174,14 @@ class Simulation:
                                           deriv_momenta.shape)
         deriv_momenta += self._particle_particle_interaction(old_positions)
         deriv_momenta += self._particle_boundary_interaction(old_positions)
+        self.ode_left_hand_side = deriv_momenta
 
+    # TODO add boundary conditions
     def _ode_system(self, _time, state_1d):
         # Convert the scipy conform 1D state back in to the 3D array:
         # This shouldn't require any copying.
         state_3d = state_1d.reshape(self.initial_state.shape)
+        state_3d = self._boundary_condition(state_3d)
         self.ode_left_hand_side[0, :, :] = (state_3d[1, :, :]
                                             / self.particle_mass)
         self._calculate_momentum_derivative(state_3d[1, :, :],
@@ -197,7 +203,8 @@ class Simulation:
         # One can also try the continuous solution.
 
     def animate(self):
-        ...
+        fig, ax = plt.subplots()
+
 
     def calculate_total_energies(self):
         ...
