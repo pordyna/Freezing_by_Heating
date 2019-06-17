@@ -2,7 +2,7 @@
 
 """
 
-
+from math import floor
 import numpy as np
 from scipy.integrate import solve_ivp
 import matplotlib.pyplot as plt
@@ -15,9 +15,11 @@ def central_difference_derivative(function, x_0, h):
 def calc_gradient(function, vec_val, h, *args):
     gradient = np.array([0, 0])
     gradient[0] = central_difference_derivative(
-        lambda x_0: function(np.array[x_0, vec_val[1]], *args), vec_val[0], h)
+        lambda x_0: function(np.array([x_0, vec_val[1]]), *args),
+        vec_val[0], h)
     gradient[1] = central_difference_derivative(
-        lambda x_0: function(np.array[vec_val[0], x_0], *args), vec_val[1], h)
+        lambda x_0: function(np.array([vec_val[0], x_0]), *args),
+        vec_val[1], h)
     return gradient
 
 
@@ -33,10 +35,10 @@ class SimulationStraightCorridor:
           Particles with a positive desired velocity come first.
         n_positive: Number of particles with the desired velocity > 0.
     """
-    def __init__(self, initial_state, n_positive, desired_speed,
+    def __init__(self, n_positive, desired_speed,
                  relaxation_time, noise_amplitude, param_factor,
                  param_exponent, core_diameter, gradient_step, particle_mass,
-                 in_core_force, **kwargs):
+                 in_core_force, initial_state=None, **kwargs):
 
         self.initial_state = initial_state
         self.desired_speed = desired_speed
@@ -51,6 +53,11 @@ class SimulationStraightCorridor:
 
         self.setup_params = kwargs
 
+        if self.initial_state is None:
+            self.n_particles = 2 * self.n_positive
+            self.initial_state = np.zeros((2, self.n_particles, 2))
+            self._set_default_initial_state()
+
         self.n_particles = self.initial_state.shape[1]
         self.n_positive = n_positive
         self.n_negative = self.n_particles - self.n_positive
@@ -62,7 +69,35 @@ class SimulationStraightCorridor:
 
         self.total_energies = None
         self.efficiencies = None
-# use numpy ravel for solver
+
+    def _set_default_initial_state(self):
+        length = self.setup_params['corridor_length']
+        width = self.setup_params['corridor_width']
+        min_spacing = self.core_diameter / 2 + self.gradient_step
+
+        n_single_line = width // self.core_diameter
+        n_full_lines = self.n_positive // n_single_line
+        n_last_line = self.n_positive % n_single_line
+        full_line = np.linspace(-min_spacing, width - min_spacing,
+                                n_single_line)
+        last_line = np.linspace(-min_spacing, width - min_spacing,
+                                n_last_line)
+        for ii in range(n_full_lines):
+            line = slice(ii, ii + n_single_line)
+            self.initial_state[0, line, 1] = full_line
+            self.initial_state[0, line, 0] = (min_spacing
+                                              + ii * (self.core_diameter
+                                                      + self.gradient_step))
+        line = slice(n_full_lines * n_single_line,
+                     n_full_lines * n_single_line + n_last_line)
+        self.initial_state[0, line, 1] = last_line
+        self.initial_state[0, line, 0] = (min_spacing + n_full_lines
+                                          * (self.core_diameter
+                                             + self.gradient_step))
+        self.initial_state[0, self.n_positive:, :] = \
+            self.initial_state[0, 0:self.n_positive:, :]
+        self.initial_state[0, self.n_positive:, 0] -= length
+        self.initial_state[0, self.n_positive:, 0] *= -1
 
     def _walls(self, position):
         """
