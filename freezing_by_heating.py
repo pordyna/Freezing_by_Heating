@@ -95,9 +95,7 @@ class SimulationStraightCorridor:
                                           * (self.core_diameter
                                              + self.gradient_step))
         self.initial_state[0, self.n_positive:, :] = \
-            self.initial_state[0, 0:self.n_positive:, :]
-        self.initial_state[0, self.n_positive:, 0] -= length
-        self.initial_state[0, self.n_positive:, 0] *= -1
+            length - self.initial_state[0, 0:self.n_positive:, :]
 
     def _walls(self, position):
         """
