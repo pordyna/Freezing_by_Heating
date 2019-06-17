@@ -36,9 +36,17 @@ def straight_corridor_direction(_position):
     return np.array([1, 0])
 
 
+def distance_sc_periodic(position_1, position_2, corridor_length):
+    distance_1 = np.linalg.norm(position_2 - position_1)
+    if position_2[0] < position_1[0]:
+        distance_2 = position_2[0] + (corridor_length - position_1[0])
+    else:
+        distance_2 = position_1[0] + (corridor_length - position_2[0])
+    return min(distance_1, distance_2)
+
+
 class Simulation:
     """
-
     Some attributes:
         initial_state(np.ndarray[dim=3]): Describes particles positions
           and momenta. 1st axis 1st element position, 1st axis 2nd
@@ -58,11 +66,15 @@ class Simulation:
           given position returns a unit vector pointing in the direction
           of the desired movement (for particles with a positive desired
           velocity).
+        distance(Callable[[np.ndarray, np.ndarray], float]):
+          Calculates distance b/w two particles. Takes positions as
+          arguments
     """
     def __init__(self, initial_state, n_positive,
                  desired_speed, desired_direction, relaxation_time,
                  noise_amplitude, param_factor, param_exponent, core_diameter,
-                 walls, gradient_step, particle_mass, in_core_force):
+                 walls, gradient_step, particle_mass, in_core_force,
+                 distance):
 
         self.initial_state = initial_state
         self.desired_speed = desired_speed
@@ -76,6 +88,7 @@ class Simulation:
         self.gradient_step = gradient_step
         self.walls = walls
         self.in_core_force = in_core_force
+        self.distance = distance
 
         self.n_particles = self.initial_state.shape[1]
         self.n_positive = n_positive
@@ -98,7 +111,7 @@ class Simulation:
         return vectors
 
     def _ppi_before_gradient(self, position, second_position):
-        particles_distance = np.linalg.norm(second_position - position)
+        particles_distance = self.distance(position, second_position)
         value = particles_distance - self.core_diameter / 2
         value = value**(-1 * self.param_exponent)
         value *= self.param_factor
@@ -117,7 +130,7 @@ class Simulation:
             # one could exclude here the i=j case (see paper) but the
             # contribution is 0 anyway.
             for second_position in positions:
-                particles_distance = np.linalg.norm(second_position - position)
+                particles_distance = self.distance(second_position, position)
                 if particles_distance <= self.core_diameter:
                     summed += self.in_core_force
                     continue
