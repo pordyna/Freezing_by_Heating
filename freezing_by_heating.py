@@ -38,7 +38,8 @@ class SimulationStraightCorridor:
     def __init__(self, n_positive, desired_speed,
                  relaxation_time, noise_amplitude, param_factor,
                  param_exponent, core_diameter, gradient_step, particle_mass,
-                 in_core_force, initial_state=None, **kwargs):
+                 in_core_force, n_drunk_positive, n_drunk_negative,
+                 drunkness, initial_state=None, **kwargs):
 
         self.initial_state = initial_state
         self.desired_speed = desired_speed
@@ -50,8 +51,11 @@ class SimulationStraightCorridor:
         self.particle_mass = particle_mass
         self.gradient_step = gradient_step
         self.in_core_force = in_core_force
-
+        self.n_drunk_positive = n_drunk_positive
+        self.n_drunk_negative = n_drunk_negative
+        self.drunkness = drunkness
         self.setup_params = kwargs
+        self.n_positive = n_positive
 
         if self.initial_state is None:
             self.n_particles = 2 * self.n_positive
@@ -59,7 +63,7 @@ class SimulationStraightCorridor:
             self._set_default_initial_state()
 
         self.n_particles = self.initial_state.shape[1]
-        self.n_positive = n_positive
+
         self.n_negative = self.n_particles - self.n_positive
 
         self.ode_left_hand_side = np.zeros_like(self.initial_state)
@@ -94,8 +98,10 @@ class SimulationStraightCorridor:
         self.initial_state[0, line, 0] = (min_spacing + n_full_lines
                                           * (self.core_diameter
                                              + self.gradient_step))
-        self.initial_state[0, self.n_positive:, :] = \
-            length - self.initial_state[0, 0:self.n_positive:, :]
+        self.initial_state[0, self.n_positive:, 0] = \
+            length - self.initial_state[0, 0:self.n_positive:, 0]
+        self.initial_state[0, self.n_positive:, 1] = \
+             self.initial_state[0, 0:self.n_positive:, 1]
 
     def _walls(self, position):
         """
@@ -140,7 +146,8 @@ class SimulationStraightCorridor:
         return min(distance_1, distance_2)
 
     def _particle_drive(self, momenta, orientation):
-        desired_momentum = (self._desired_direction * self.desired_speed
+        #TODO position for desired_direction
+        desired_momentum = (self._desired_direction(0) * self.desired_speed
                             * orientation * self.particle_mass)
         vectors = momenta - desired_momentum  # along 2nd axis of momenta
         vectors *= 1 / self.relaxation_time
@@ -198,29 +205,34 @@ class SimulationStraightCorridor:
         particle_choice = slice(0, self.n_particles)
         deriv_momenta[particle_choice] = self._particle_drive(
             old_momenta[particle_choice], 1)
+
         # only the particles with a negative v_0:
         particle_choice = slice(self.n_positive, self.n_particles)
         deriv_momenta[particle_choice] = self._particle_drive(
             old_momenta[particle_choice], -1)
         # all particles:
-        deriv_momenta += np.random.normal(0, self.noise_amplitude,
+        drunks = slice(-self.n_drunk_negative, self.n_drunk_positive)
+        deriv_momenta += self.noise_amplitude * np.random.normal(0, 1,
                                           deriv_momenta.shape)
+        deriv_momenta[drunks] += (self.drunkness - self.noise_amplitude) * np.random.normal(0, 1,
+                                          deriv_momenta[drunks].shape)
         deriv_momenta += self._particle_particle_interaction(old_positions)
         deriv_momenta += self._particle_boundary_interaction(old_positions)
-        self.ode_left_hand_side = deriv_momenta
+        self.ode_left_hand_side[1, :, :] = deriv_momenta
 
     # TODO add boundary conditions
     def _ode_system(self, _time, state_1d):
         # Convert the scipy conform 1D state back in to the 3D array:
         # This shouldn't require any copying.
         state_3d = state_1d.reshape(self.initial_state.shape)
-        state_3d = self._boundary_condition(state_3d)
+        # state_3d = self._boundary_condition(state_3d)
         self.ode_left_hand_side[0, :, :] = (state_3d[1, :, :]
                                             / self.particle_mass)
         self._calculate_momentum_derivative(state_3d[1, :, :],
                                             state_3d[0, :, :])
         # Return the calculated derivatives in 1D:
         # Again no copy is made since the array is still C-contiguous.
+
         return np.ravel(self.ode_left_hand_side)
 
     def run_simulation(self, integration_interval):
@@ -235,9 +247,21 @@ class SimulationStraightCorridor:
             print('no success')
         # One can also try the continuous solution.
 
+
     def animate(self):
         fig, ax = plt.subplots()
-
+        t_0 = 0
+        for ii, t in enumerate(self.times):
+            # ax.lines = []
+            state_3d = self.states[:, ii].reshape(self.initial_state.shape)
+            positions = state_3d[0, :, :]
+            print(positions[1, :])
+            ax.plot(positions[:, 0], positions[:, 1],".")
+            print(t)
+            # plt.pause(t - t_0)
+            t_0 = t
+            plt.show()
+        return fig, ax
 
     def calculate_total_energies(self):
         ...
