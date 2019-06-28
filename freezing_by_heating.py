@@ -3,11 +3,12 @@
 """
 
 from math import floor
+import time
 import numpy as np
 from scipy.integrate import solve_ivp
 import matplotlib.pyplot as plt
 
-
+from patches import circles
 def central_difference_derivative(function, x_0, h):
     return (function(x_0 + 0.5 * h) - function(x_0 - 0.5 * h)) / h
 
@@ -103,6 +104,9 @@ class SimulationStraightCorridor:
         self.initial_state[0, self.n_positive:, 1] = \
              self.initial_state[0, 0:self.n_positive:, 1]
 
+        self.initial_state[1, 0: self.n_positive] = self.desired_speed * self._desired_direction(0)
+        self.initial_state[1, self.n_positive:] = -1 * self.desired_speed * self._desired_direction(0)
+
     def _walls(self, position):
         """
 
@@ -118,8 +122,10 @@ class SimulationStraightCorridor:
         Takes a state (as defined for initial_state) and returns an
         adapted state that satisfies the boundary conditions.
         """
-        np.mod(state, self.setup_params['corridor_length'],
-               where=[True, False], out=state)
+        np.mod(state[0, :, :], self.setup_params['corridor_length'],
+               where=[True, False], out=state[0, :, :])
+        escaped_to_left = np.where(state[0, :, 0] < 0)
+        state[0, :, 0][escaped_to_left] += self.setup_params['corridor_length']
         return state
 
     @staticmethod
@@ -149,7 +155,7 @@ class SimulationStraightCorridor:
         #TODO position for desired_direction
         desired_momentum = (self._desired_direction(0) * self.desired_speed
                             * orientation * self.particle_mass)
-        vectors = momenta - desired_momentum  # along 2nd axis of momenta
+        vectors = desired_momentum - momenta  # along 2nd axis of momenta
         vectors *= 1 / self.relaxation_time
         return vectors
 
@@ -202,7 +208,7 @@ class SimulationStraightCorridor:
     def _calculate_momentum_derivative(self, old_momenta, old_positions):
         deriv_momenta = self.ode_left_hand_side[1, :, :]
         # only the particles with a positive v_0:
-        particle_choice = slice(0, self.n_particles)
+        particle_choice = slice(0, self.n_positive)
         deriv_momenta[particle_choice] = self._particle_drive(
             old_momenta[particle_choice], 1)
 
@@ -214,10 +220,10 @@ class SimulationStraightCorridor:
         drunks = slice(-self.n_drunk_negative, self.n_drunk_positive)
         deriv_momenta += self.noise_amplitude * np.random.normal(0, 1,
                                           deriv_momenta.shape)
-        deriv_momenta[drunks] += (self.drunkness - self.noise_amplitude) * np.random.normal(0, 1,
-                                          deriv_momenta[drunks].shape)
+        #deriv_momenta[drunks] += (self.drunkness - self.noise_amplitude) * np.random.normal(0, 1,
+        #                                  deriv_momenta[drunks].shape)
         deriv_momenta += self._particle_particle_interaction(old_positions)
-        deriv_momenta += self._particle_boundary_interaction(old_positions)
+        #deriv_momenta += self._particle_boundary_interaction(old_positions)
         self.ode_left_hand_side[1, :, :] = deriv_momenta
 
     # TODO add boundary conditions
@@ -225,7 +231,7 @@ class SimulationStraightCorridor:
         # Convert the scipy conform 1D state back in to the 3D array:
         # This shouldn't require any copying.
         state_3d = state_1d.reshape(self.initial_state.shape)
-        # state_3d = self._boundary_condition(state_3d)
+        state_3d = self._boundary_condition(state_3d)
         self.ode_left_hand_side[0, :, :] = (state_3d[1, :, :]
                                             / self.particle_mass)
         self._calculate_momentum_derivative(state_3d[1, :, :],
@@ -247,20 +253,34 @@ class SimulationStraightCorridor:
             print('no success')
         # One can also try the continuous solution.
 
-
-    def animate(self):
+    def animate(self, scale):
         fig, ax = plt.subplots()
-        t_0 = 0
+        ax.set_xlim(-0.5, self.setup_params['corridor_length'] + 0.5)
+        plt.axis('equal')
+        t_0 = 0.00001
+        positions = self.initial_state[0, :, :]
+        positive = slice(0, self.n_positive)
+        negative = slice(self.n_positive, self.n_particles)
+        circles(positions[positive, 0], positions[positive, 1],
+                self.core_diameter, c='red', axis=ax)
+        circles(positions[negative, 0], positions[negative, 1],
+                self.core_diameter, c='blue', axis=ax)
+        fig.canvas.draw()
         for ii, t in enumerate(self.times):
-            # ax.lines = []
+            ax.collections = []
+            start_time = time.time()
             state_3d = self.states[:, ii].reshape(self.initial_state.shape)
             positions = state_3d[0, :, :]
-            print(positions[1, :])
-            ax.plot(positions[:, 0], positions[:, 1],".")
-            print(t)
-            # plt.pause(t - t_0)
-            t_0 = t
-            plt.show()
+            circles(positions[positive, 0], positions[positive, 1],
+                    self.core_diameter, c='red', axis=ax)
+            circles(positions[negative, 0], positions[negative, 1],
+                    self.core_diameter, c='blue', axis=ax)
+            fig.canvas.draw()
+            try:
+                plt.pause(abs((self.times[ii + 1] - t))
+                          / scale - (start_time - time.time()))
+            except IndexError:
+                pass
         return fig, ax
 
     def calculate_total_energies(self):
