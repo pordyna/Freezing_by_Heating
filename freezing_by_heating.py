@@ -182,7 +182,7 @@ class SimulationStraightCorridor:
             distance, direction = self._walls(position)
             force = self.param_factor * self.param_exponent
             force *= ((distance - self.core_diameter/2)
-                      ** (self.param_exponent - 1))
+                      ** (-self.param_exponent - 1))
             output[ii] = force * direction
         return output
 
