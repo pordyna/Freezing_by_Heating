@@ -1,27 +1,12 @@
 """
 
 """
-
-from math import floor
 import time
 import numpy as np
 from scipy.integrate import solve_ivp
 import matplotlib.pyplot as plt
 
 from patches import circles
-def central_difference_derivative(function, x_0, h):
-    return (function(x_0 + 0.5 * h) - function(x_0 - 0.5 * h)) / h
-
-
-def calc_gradient(function, vec_val, h, *args):
-    gradient = np.array([0, 0])
-    gradient[0] = central_difference_derivative(
-        lambda x_0: function(np.array([x_0, vec_val[1]]), *args),
-        vec_val[0], h)
-    gradient[1] = central_difference_derivative(
-        lambda x_0: function(np.array([vec_val[0], x_0]), *args),
-        vec_val[1], h)
-    return gradient
 
 
 class SimulationStraightCorridor:
@@ -104,17 +89,23 @@ class SimulationStraightCorridor:
         self.initial_state[0, self.n_positive:, 1] = \
              self.initial_state[0, 0:self.n_positive:, 1]
 
-        self.initial_state[1, 0: self.n_positive] = self.desired_speed * self._desired_direction(0)
-        self.initial_state[1, self.n_positive:] = -1 * self.desired_speed * self._desired_direction(0)
+        self.initial_state[1, 0: self.n_positive] = \
+            self.desired_speed * self._desired_direction()
+        self.initial_state[1, self.n_positive:] = \
+            -1 * self.desired_speed * self._desired_direction()
 
     def _walls(self, position):
         """
-
-        For a given particle position should return the shortest
-        distance to the nearest wall.
+        For a given particle position  returns the shortest
+        distance to the nearest wall  and a unit vector along the
+        shortest connecting line (pointing at the particle).
         """
-        return min(position[1],
-                   self.setup_params['corridor_width'] - position[1])
+        distance_1 = position[1]
+        distance_2 = self.setup_params['corridor_width'] - position[1]
+        if distance_1 < distance_2:
+            return distance_1, np.array([0, 1])
+        else:
+            return distance_2, np.array([0, -1])
 
     def _boundary_condition(self, state):
         """
@@ -129,7 +120,7 @@ class SimulationStraightCorridor:
         return state
 
     @staticmethod
-    def _desired_direction(_position):
+    def _desired_direction():
         """
 
         For a given position returns a unit vector pointing in the
@@ -142,53 +133,45 @@ class SimulationStraightCorridor:
         """Calculates _distance b/w two particles.
 
         Takes positions as arguments.
+        Returns distance and r_1 - r_2 / |r_1 - r_2|
         """
         corridor_length = self.setup_params['corridor_length']
         distance_1 = np.linalg.norm(position_2 - position_1)
-        if position_2[0] < position_1[0]:
-            distance_2 = position_2[0] + (corridor_length - position_1[0])
+        # transpose second particle
+        position_2_tr = position_2
+        if position_2[0] > position_1[0]:
+            position_2_tr[0] -= corridor_length
         else:
-            distance_2 = position_1[0] + (corridor_length - position_2[0])
-        return min(distance_1, distance_2)
+            position_2_tr[0] += corridor_length
+        # calculate distance over the periodic boundary
+        distance_2 = np.linalg.norm(position_2_tr - position_1)
+        if distance_2 < distance_1:
+            return distance_2, (position_2_tr - position_1) / distance_2
+        else:
+            return distance_1, (position_2 - position_1) / distance_1
 
     def _particle_drive(self, momenta, orientation):
-        #TODO position for desired_direction
-        desired_momentum = (self._desired_direction(0) * self.desired_speed
+        desired_momentum = (self._desired_direction() * self.desired_speed
                             * orientation * self.particle_mass)
         vectors = desired_momentum - momenta  # along 2nd axis of momenta
         vectors *= 1 / self.relaxation_time
         return vectors
 
-    def _ppi_before_gradient(self, position, second_position):
-        particles_distance = self._distance(position, second_position)
-        value = particles_distance - self.core_diameter / 2
-        value = value**(-1 * self.param_exponent)
-        value *= self.param_factor
-        return value
-
-    def _pbi_before_gradient(self, position):
-        value = self._walls(position) - self.core_diameter / 2
-        value = value**(-1 * self.param_exponent)
-        value *= self.param_factor
-        return value
-
     def _particle_particle_interaction(self, positions):
         output = np.zeros_like(positions)
         for ii, position in enumerate(positions):
-            summed = 0
+            summed = np.zeros(2)
             # one could exclude here the i=j case (see paper) but the
             # contribution is 0 anyway.
             for second_position in positions:
-                particles_distance = self._distance(second_position, position)
-                if particles_distance <= self.core_diameter:
-                    summed += self.in_core_force
-                    continue
-                if particles_distance < self.gradient_step / 2:
-                    step = particles_distance
+                distance, direction = self._distance(second_position, position)
+                if distance <= self.core_diameter:
+                    force = self.in_core_force
                 else:
-                    step = self.gradient_step
-                summed += - calc_gradient(self._ppi_before_gradient, position,
-                                          step, second_position)
+                    force = ((distance - self.core_diameter)
+                             ** (-self.param_exponent - 1))
+                    force *= self.param_factor * self.param_exponent
+                summed += force * direction
             output[ii] = summed
         return output
 
@@ -196,13 +179,11 @@ class SimulationStraightCorridor:
         output = np.zeros_like(positions)
         for ii, position in enumerate(positions):
             # Avoid going behind the walls while calculating the derivative.
-            distance = self._walls(position)
-            if distance < self.gradient_step / 2:
-                step = distance
-            else:
-                step = self.gradient_step
-            output[ii] = - calc_gradient(self._pbi_before_gradient, position,
-                                       step)
+            distance, direction = self._walls(position)
+            force = self.param_factor * self.param_exponent
+            force *= ((distance - self.core_diameter/2)
+                      ** (self.param_exponent - 1))
+            output[ii] = force * direction
         return output
 
     def _calculate_momentum_derivative(self, old_momenta, old_positions):
@@ -218,12 +199,14 @@ class SimulationStraightCorridor:
             old_momenta[particle_choice], -1)
         # all particles:
         drunks = slice(-self.n_drunk_negative, self.n_drunk_positive)
-        deriv_momenta += self.noise_amplitude * np.random.normal(0, 1,
-                                          deriv_momenta.shape)
-        #deriv_momenta[drunks] += (self.drunkness - self.noise_amplitude) * np.random.normal(0, 1,
-        #                                  deriv_momenta[drunks].shape)
+        noise = (self.noise_amplitude
+                 * np.random.normal(0, 1, deriv_momenta.shape))
+        deriv_momenta += noise
+        noise = ((self.drunkness - self.noise_amplitude)
+                 * np.random.normal(0, 1, deriv_momenta[drunks].shape))
+        deriv_momenta[drunks] += noise
         deriv_momenta += self._particle_particle_interaction(old_positions)
-        #deriv_momenta += self._particle_boundary_interaction(old_positions)
+        deriv_momenta += self._particle_boundary_interaction(old_positions)
         self.ode_left_hand_side[1, :, :] = deriv_momenta
 
     # TODO add boundary conditions
