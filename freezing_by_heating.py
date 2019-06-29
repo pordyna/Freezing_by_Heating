@@ -23,7 +23,7 @@ class SimulationStraightCorridor:
     """
     def __init__(self, n_positive, desired_speed,
                  relaxation_time, noise_amplitude, param_factor,
-                 param_exponent, core_diameter, gradient_step, particle_mass,
+                 param_exponent, core_diameter, particle_mass,
                  in_core_force, n_drunk_positive, n_drunk_negative,
                  drunkness, initial_state=None, **kwargs):
 
@@ -35,7 +35,6 @@ class SimulationStraightCorridor:
         self.param_exponent = param_exponent
         self.core_diameter = core_diameter
         self.particle_mass = particle_mass
-        self.gradient_step = gradient_step
         self.in_core_force = in_core_force
         self.n_drunk_positive = n_drunk_positive
         self.n_drunk_negative = n_drunk_negative
@@ -63,27 +62,27 @@ class SimulationStraightCorridor:
     def _set_default_initial_state(self):
         length = self.setup_params['corridor_length']
         width = self.setup_params['corridor_width']
-        min_spacing = self.core_diameter / 2 + self.gradient_step
+        min_spacing = self.core_diameter * 0.501
 
         n_single_line = width // self.core_diameter
         n_full_lines = self.n_positive // n_single_line
         n_last_line = self.n_positive % n_single_line
-        full_line = np.linspace(-min_spacing, width - min_spacing,
+        full_line = np.linspace(min_spacing, width - min_spacing,
                                 n_single_line)
-        last_line = np.linspace(-min_spacing, width - min_spacing,
+        last_line = np.linspace(min_spacing, width - min_spacing,
                                 n_last_line)
         for ii in range(n_full_lines):
             line = slice(ii, ii + n_single_line)
             self.initial_state[0, line, 1] = full_line
             self.initial_state[0, line, 0] = (min_spacing
                                               + ii * (self.core_diameter
-                                                      + self.gradient_step))
+                                                      * 1.01))
         line = slice(n_full_lines * n_single_line,
                      n_full_lines * n_single_line + n_last_line)
         self.initial_state[0, line, 1] = last_line
         self.initial_state[0, line, 0] = (min_spacing + n_full_lines
                                           * (self.core_diameter
-                                             + self.gradient_step))
+                                             * 1.01))
         self.initial_state[0, self.n_positive:, 0] = \
             length - self.initial_state[0, 0:self.n_positive:, 0]
         self.initial_state[0, self.n_positive:, 1] = \
@@ -147,8 +146,9 @@ class SimulationStraightCorridor:
         distance_2 = np.linalg.norm(position_2_tr - position_1)
         if distance_2 < distance_1:
             return distance_2, (position_2_tr - position_1) / distance_2
-        else:
-            return distance_1, (position_2 - position_1) / distance_1
+        elif distance_1 == 0:
+            return 0, np.array([0, 0])
+        return distance_1, (position_2 - position_1) / distance_1
 
     def _particle_drive(self, momenta, orientation):
         desired_momentum = (self._desired_direction() * self.desired_speed
