@@ -92,6 +92,7 @@ def _particle_drive(desired_speed,
     vectors = np.multiply(1 / relaxation_time, vectors)
     return vectors
 
+
 @jit(cache=True, nopython=True, parallel=False)
 def _walls(corridor_width, position):
     """
@@ -124,9 +125,9 @@ def _jacobian(param_factor, param_exponent, core_diameter, particle_mass,
     jac2 = np.eye(blocksize) / particle_mass
     jac3 = np.zeros((blocksize, blocksize))
     # iterate over 2-particle combinations
-    for i in range(n_positive):
+    for i in prange(n_positive):
         position_i = state1d[2 * i:2 * i + 1]
-        for j in range(n_positive):
+        for j in prange(n_positive):
             position_j = state1d[2 * j:2 * j + 1]
 
             if i != j:
@@ -150,8 +151,8 @@ def _jacobian(param_factor, param_exponent, core_diameter, particle_mass,
 
                 # similar, derivate after space coordinates of second particle
                 # -> one term falls away
-                df_ijdivdx_j =(0 - direction[0] / dist * position_i * f
-                               - (B + 1) / (dist - D) * direction[0] * f)
+                df_ijdivdx_j = (0 - direction[0] / dist * position_i * f
+                                - (B + 1) / (dist - D) * direction[0] * f)
                 df_ijdivdy_j = (0 - direction[0] / dist * position_i * f
                                 - (B + 1) / (dist - D) * direction[0] * f)
 
@@ -176,11 +177,15 @@ def _jacobian(param_factor, param_exponent, core_diameter, particle_mass,
 
                 # add contributions in sum form particles i, j
                 # TODO Correct indexing. jac3 is 2D not 3D
+                # Should it be like this: ?
+                # jac3[2 * i, 2 * i + 2] += block_first_arg
+                # jac3[2 * j, 2 * j + 2] += block_second_arg
+                # That's how it was:
                 jac3[2 * i:2 * i + 2, 2 * i, 2 * i + 2] += block_first_arg
                 jac3[2 * i:2 * i + 2, 2 * j, 2 * j + 2] += block_second_arg
 
     # quite similar
-    for i in range(n_positive):
+    for i in prange(n_positive):
         position = state1d[2 * i:2 * i + 1]
         dist_wall, direction = _walls(corridor_width, position)
         # use direction[1] in order to get right sign
@@ -188,7 +193,7 @@ def _jacobian(param_factor, param_exponent, core_diameter, particle_mass,
 
         # same as above. walls are even harder than human bodys.
         if dist_wall <= 0:
-            df_i_ydivdy_i = in_core_force * 100000
+            df_i_ydivdy_i = exp(600)
 
         # "correct"
         #      if dist_wall < 0:
