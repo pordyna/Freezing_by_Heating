@@ -7,37 +7,15 @@ import numpy as np
 from scipy.integrate import solve_ivp
 import matplotlib.pyplot as plt
 from scipy.stats import truncnorm
-from numba import jit
+from numba import jit, prange
+import numba
 from patches import circles
 from functools import partial
+
 
 def convert_truncated_normal(a,b, std, mean=0):
     return(a - mean) / std, (b - mean) / std
 
-@jit(cache=True, nopython=True, parallel=False)
-def _particle_particle_interaction(core_diameter,
-                                   in_core_force, exp_width, extra_potential, param_factor,
-                                   param_exponent, state_preparation, corridor_length, positions):
-    output = np.zeros_like(positions)
-    for ii in range(positions.shape[0]):
-        position = positions[ii]
-        summed = np.zeros(2)
-        # one could exclude here the i=j case (see paper) but the
-        # contribution is 0 anyway.
-        for gg in range(positions.shape[0]):
-            second_position = positions[gg]
-            distance, direction = _distance(position, second_position, corridor_length)
-            if state_preparation:
-                force = in_core_force
-            else:
-                force = ((distance - core_diameter)
-                         ** (-param_exponent - 1))
-                force *= param_factor * param_exponent
-                if abs(distance - core_diameter) <= 200 * exp_width:
-                    force += extra_potential / (1 + exp(abs(distance - core_diameter)/exp_width))
-            summed -= force * direction
-        output[ii] = summed
-    return output
 
 @jit(cache=True, nopython=True, parallel=False)
 def _distance(position_1, position_2, corridor_length):
@@ -62,6 +40,35 @@ def _distance(position_1, position_2, corridor_length):
 
     return distance_1, (position_2 - position_1) / distance_1
 
+
+@jit((numba.float64, numba.float64, numba.float64, numba.float64, numba.float64,
+      numba.float64, numba.boolean, numba.float64, numba.float64[:, :]),
+     cache=False, nopython=True, parallel=True)
+def _particle_particle_interaction(core_diameter,
+                                   in_core_force, exp_width, extra_potential, param_factor,
+                                   param_exponent, state_preparation, corridor_length, positions):
+    output = np.zeros_like(positions)
+    for ii in prange(positions.shape[0]):
+        position = positions[ii]
+        summed = np.zeros(2)
+        # one could exclude here the i=j case (see paper) but the
+        # contribution is 0 anyway.
+        for gg in prange(positions.shape[0]):
+            second_position = positions[gg]
+            distance, direction = _distance(position, second_position, corridor_length)
+            if state_preparation:
+                force = in_core_force
+            else:
+                force = ((distance - core_diameter)
+                         ** (-param_exponent - 1))
+                force *= param_factor * param_exponent
+                if abs(distance - core_diameter) <= 200 * exp_width:
+                    force += extra_potential / (1 + exp(abs(distance - core_diameter)/exp_width))
+            summed -= force * direction
+        output[ii] = summed
+    return output
+
+
 @jit(cache=True, nopython=True, parallel=False)
 def _boundary_condition(corridor_length, state):
     """
@@ -74,6 +81,7 @@ def _boundary_condition(corridor_length, state):
     state[0, :, 0][escaped_to_left] += corridor_length
     return state
 
+
 @jit(cache=True, nopython=True, parallel=False)
 def _particle_drive(desired_speed,
                     particle_mass, relaxation_time,
@@ -82,6 +90,114 @@ def _particle_drive(desired_speed,
     vectors = desired_momentum - momenta  # along 2nd axis of momenta
     vectors = np.multiply(1 / relaxation_time, vectors)
     return vectors
+
+@jit(cache=True, nopython=True, parallel=False)
+def _walls(corridor_width, position):
+    """
+    For a given particle position  returns the shortest
+    distance to the nearest wall  and a unit vector along the
+    shortest connecting line (pointing at the particle).
+    """
+    distance_1 = position[1]
+    distance_2 = corridor_width - position[1]
+    if distance_1 < distance_2:
+        return distance_1, np.array([0, 1])
+    else:
+        return distance_2, np.array([0, -1])
+
+
+@jit((numba.float64, numba.float64, numba.float64, numba.float64,
+      numba.float64, numba.float64, numba.uint, numba.float64, numba.float64,
+      numba.float64[:], numba.float64[:]),
+     cache=False, nopython=True, parallel=True)
+def _jacobian(param_factor, param_exponent, core_diameter, particle_mass,
+             corridor_length, corridor_width, n_positive, in_core_force,
+             relaxation_time, _time, state1d):
+    # shorter
+    A = param_factor
+    B = param_exponent
+    D = core_diameter
+    # building from blocks
+    blocksize = int(state1d.shape[0] // 2)
+    jac1 = np.zeros((blocksize, blocksize))
+    jac2 = np.eye(blocksize) / particle_mass
+    jac3 = np.zeros((blocksize, blocksize))
+    # iterate over 2-particle combinations
+    for i in range(n_positive):
+        position_i = state1d[2 * i:2 * i + 1]
+        for j in range(n_positive):
+            position_j = state1d[2 * j:2 * j + 1]
+
+            # calculate useful terms that make up matrix elements
+            dist, direction = _distance(position_i, position_j, corridor_length)
+            # attention, unusual definition (other way round)
+            direction *= -1
+            # just for convenience
+            f = A * B / dist * (dist - D)**(-B - 1)
+
+            # contributions from particles i,j that enter into Jacobian:
+            # for example: df_ijdivdx_i = "df_ij/dx_i":
+            # force from particle j on particle i derivated after x_i (of
+            # first particle)
+            df_ijdivdx_i = np.array([1, 0]) * f - direction[
+                0] / dist * position_i * f - (B + 1) / (dist - D) * direction[
+                               0] * f
+            df_ijdivdy_i = np.array([0, 1]) * f - direction[
+                1] / dist * position_i * f - (B + 1) / (dist - D) * direction[
+                               1] * f
+
+            # similar, derivate after space coordinates of second particle
+            # -> one term falls away
+            df_ijdivdx_j = 0 - direction[0] / dist * position_i * f - (
+                        B + 1) / (dist - D) * direction[0] * f
+            df_ijdivdy_j = 0 - direction[0] / dist * position_i * f - (
+                        B + 1) / (dist - D) * direction[0] * f
+
+            # for convenience: write this in terms of 2x2 blocks
+            block_i_equal_j = np.column_stack((df_ijdivdx_i, df_ijdivdy_i))
+            block_i_unequal_j = np.column_stack((df_ijdivdx_j, df_ijdivdy_j))
+
+            # hard core: really would only have < and not <=, but should not
+            # matter and probably more stable, but not sure
+            # 1000000: just some high value: at border, full potential comes
+            # in -> goes to infinity.
+            if dist <= core_diameter:
+                block_i_equal_j = np.eye(2) * in_core_force * 10000
+                block_i_inequal_j = -np.eye(2) * in_core_force * 10000
+
+            # "correct", but probably annoying, if manages to tunnel into
+            # other particle due to timestep issues
+            #       if dist < core_diameter:
+            #          block_i_equal_j = np.eye(2)*in_core_force*np.inf
+            #         block_i_inequal_j = -np.eye(2)*in_core_force*np.inf
+
+            # add contributions in sum form particles i, j
+            jac3[2 * i:2 * i + 2, 2 * i, 2 * i + 2] += block_i_equal_j
+            jac3[2 * i:2 * i + 2, 2 * j, 2 * j + 2] += block_i_unequal_j
+
+    # quite similar
+    for i in range(n_positive):
+        position = state1d[2 * i:2 * i + 1]
+        dist_wall, direction = _walls(corridor_width, position)
+        # use direction[1] in order to get right sign
+        df_i_ydivdy_i = A * B * direction[1] * (dist_wall - D / 2)**(-B - 1)
+
+        # same as above. walls are even harder than human bodys.
+        if dist_wall <= 0:
+            df_i_ydivdy_i = in_core_force * 100000
+
+        # "correct"
+        #      if dist_wall < 0:
+        #          df_i_ydivdy_i = self.in_core_force*np.inf
+
+        jac3[2 * i + 1, 2 * i + 1] += df_i_ydivdy_i
+
+    jac4 = - np.eye(blocksize) * particle_mass / relaxation_time
+
+    # build together
+    jacobian = np.block([[jac1, jac2], [jac3, jac4]])
+
+    return jacobian
 
 class SimulationStraightCorridor:
     """
@@ -130,6 +246,12 @@ class SimulationStraightCorridor:
         self._particle_drive = partial(_particle_drive,
                                        self.desired_speed, self.particle_mass,
                                        self.relaxation_time)
+
+        self._walls = partial(_walls, corridor_width)
+
+        self._jacobian = partial(_jacobian, self.param_factor, self.param_exponent, self.core_diameter, self.particle_mass,
+             self.corridor_length, self.corridor_width, self.n_positive, self.in_core_force,
+             self.relaxation_time)
         noise_std = sqrt(noise_variance)
         a,b = convert_truncated_normal(-max_noise_val, max_noise_val,
                                        noise_std)
@@ -191,18 +313,6 @@ class SimulationStraightCorridor:
         #self.initial_state[1, self.n_positive:] = \
         #    -1 * self.desired_speed * self._desired_direction()
 
-    def _walls(self, position):
-        """
-        For a given particle position  returns the shortest
-        distance to the nearest wall  and a unit vector along the
-        shortest connecting line (pointing at the particle).
-        """
-        distance_1 = position[1]
-        distance_2 = self.corridor_width - position[1]
-        if distance_1 < distance_2:
-            return distance_1, np.array([0, 1])
-        else:
-            return distance_2, np.array([0, -1])
 
     def _particle_boundary_interaction(self, positions):
         output = np.zeros_like(positions)
@@ -258,10 +368,10 @@ class SimulationStraightCorridor:
 
         return np.ravel(self.ode_left_hand_side)
 
-    def run_simulation(self, integration_interval, solver='RK45'):
+    def run_simulation(self, integration_interval, **kwargs):
         initial_state_1d = np.copy(np.ravel(self.initial_state))
         output = solve_ivp(self._ode_system, integration_interval,
-                           initial_state_1d, method=solver, max_step=0.01)
+                           initial_state_1d, jac=self._jacobian, **kwargs)
         self.simulation_succeeded = output.success
         self.nfev = output.nfev
         self.njev = output.njev
