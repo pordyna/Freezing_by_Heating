@@ -43,7 +43,7 @@ def _distance(position_1, position_2, corridor_length):
 
 @jit((numba.float64, numba.float64, numba.float64, numba.float64, numba.float64,
       numba.float64, numba.boolean, numba.float64, numba.float64[:, :]),
-     cache=False, nopython=True, parallel=True)
+     cache=True, nopython=True, parallel=True)
 def _particle_particle_interaction(core_diameter,
                                    in_core_force, exp_width, extra_potential, param_factor,
                                    param_exponent, state_preparation, corridor_length, positions):
@@ -56,6 +56,7 @@ def _particle_particle_interaction(core_diameter,
         for gg in prange(positions.shape[0]):
             second_position = positions[gg]
             distance, direction = _distance(position, second_position, corridor_length)
+            # TODO decide on how this should look like. Remove exponential?
             if state_preparation:
                 force = in_core_force
             else:
@@ -109,10 +110,10 @@ def _walls(corridor_width, position):
 @jit((numba.float64, numba.float64, numba.float64, numba.float64,
       numba.float64, numba.float64, numba.uint, numba.float64, numba.float64,
       numba.float64[:], numba.float64[:]),
-     cache=False, nopython=True, parallel=True)
+     cache=True, nopython=True, parallel=True)
 def _jacobian(param_factor, param_exponent, core_diameter, particle_mass,
-             corridor_length, corridor_width, n_positive, in_core_force,
-             relaxation_time, _time, state1d):
+              corridor_length, corridor_width, n_positive, in_core_force,
+              relaxation_time, _time, state1d):
     # shorter
     A = param_factor
     B = param_exponent
@@ -128,52 +129,55 @@ def _jacobian(param_factor, param_exponent, core_diameter, particle_mass,
         for j in range(n_positive):
             position_j = state1d[2 * j:2 * j + 1]
 
-            # calculate useful terms that make up matrix elements
-            dist, direction = _distance(position_i, position_j, corridor_length)
-            # attention, unusual definition (other way round)
-            direction *= -1
-            # just for convenience
-            f = A * B / dist * (dist - D)**(-B - 1)
+            if i != j:
+                # calculate useful terms that make up matrix elements
+                dist, direction = _distance(position_i, position_j, corridor_length)
+                # attention, unusual definition (other way round)
+                direction *= -1
+                # just for convenience
+                f = A * B / dist * (dist - D)**(-B - 1)
 
-            # contributions from particles i,j that enter into Jacobian:
-            # for example: df_ijdivdx_i = "df_ij/dx_i":
-            # force from particle j on particle i derivated after x_i (of
-            # first particle)
-            df_ijdivdx_i = np.array([1, 0]) * f - direction[
-                0] / dist * position_i * f - (B + 1) / (dist - D) * direction[
-                               0] * f
-            df_ijdivdy_i = np.array([0, 1]) * f - direction[
-                1] / dist * position_i * f - (B + 1) / (dist - D) * direction[
-                               1] * f
+                # contributions from particles i,j that enter into Jacobian:
+                # for example: df_ijdivdx_i = "df_ij/dx_i":
+                # force from particle j on particle i derivated after x_i (of
+                # first particle)
+                df_ijdivdx_i = (np.array([1, 0]) * f - direction[0] / dist
+                                * position_i * f - (B + 1)
+                                / (dist - D) * direction[0] * f)
+                df_ijdivdy_i = (np.array([0, 1]) * f - direction[1] / dist
+                                * position_i * f - (B + 1)
+                                / (dist - D) * direction[1] * f)
 
-            # similar, derivate after space coordinates of second particle
-            # -> one term falls away
-            df_ijdivdx_j = 0 - direction[0] / dist * position_i * f - (
-                        B + 1) / (dist - D) * direction[0] * f
-            df_ijdivdy_j = 0 - direction[0] / dist * position_i * f - (
-                        B + 1) / (dist - D) * direction[0] * f
+                # similar, derivate after space coordinates of second particle
+                # -> one term falls away
+                df_ijdivdx_j =(0 - direction[0] / dist * position_i * f
+                               - (B + 1) / (dist - D) * direction[0] * f)
+                df_ijdivdy_j = (0 - direction[0] / dist * position_i * f
+                                - (B + 1) / (dist - D) * direction[0] * f)
 
-            # for convenience: write this in terms of 2x2 blocks
-            block_i_equal_j = np.column_stack((df_ijdivdx_i, df_ijdivdy_i))
-            block_i_unequal_j = np.column_stack((df_ijdivdx_j, df_ijdivdy_j))
+                # for convenience: write this in terms of 2x2 blocks
+                block_first_arg = np.column_stack((df_ijdivdx_i, df_ijdivdy_i))
+                block_second_arg = np.column_stack((df_ijdivdx_j, df_ijdivdy_j))
 
-            # hard core: really would only have < and not <=, but should not
-            # matter and probably more stable, but not sure
-            # 1000000: just some high value: at border, full potential comes
-            # in -> goes to infinity.
-            if dist <= core_diameter:
-                block_i_equal_j = np.eye(2) * in_core_force * 10000
-                block_i_inequal_j = -np.eye(2) * in_core_force * 10000
+                # hard core: really would only have < and not <=, but should not
+                # matter and probably more stable, but not sure
+                # exp(600): just some high value: at border, full potential comes
+                # in -> goes to infinity.
+                # for spreading particles.
+                if dist <= core_diameter:
+                    block_first_arg = np.eye(2) * exp(600)
+                    block_second_arg = -np.eye(2) * exp(600)
 
-            # "correct", but probably annoying, if manages to tunnel into
-            # other particle due to timestep issues
-            #       if dist < core_diameter:
-            #          block_i_equal_j = np.eye(2)*in_core_force*np.inf
-            #         block_i_inequal_j = -np.eye(2)*in_core_force*np.inf
+                # "correct", but probably annoying, if manages to tunnel into
+                # other particle due to timestep issues
+                #       if dist < core_diameter:
+                #          block_first_arg = np.eye(2)*in_core_force*np.inf
+                #         block_second_arg = -np.eye(2)*in_core_force*np.inf
 
-            # add contributions in sum form particles i, j
-            jac3[2 * i:2 * i + 2, 2 * i, 2 * i + 2] += block_i_equal_j
-            jac3[2 * i:2 * i + 2, 2 * j, 2 * j + 2] += block_i_unequal_j
+                # add contributions in sum form particles i, j
+                # TODO Correct indexing. jac3 is 2D not 3D
+                jac3[2 * i:2 * i + 2, 2 * i, 2 * i + 2] += block_first_arg
+                jac3[2 * i:2 * i + 2, 2 * j, 2 * j + 2] += block_second_arg
 
     # quite similar
     for i in range(n_positive):
@@ -340,10 +344,11 @@ class SimulationStraightCorridor:
             old_momenta[particle_choice], -1)
         # all particles:
         drunks = slice(-self.n_drunk_negative, self.n_drunk_positive)
-        noise = self.random_dist.rvs(size=deriv_momenta.size)
-        noise = noise.reshape(deriv_momenta.shape)
+        if max_noise_val!=0:
+            noise = self.random_dist.rvs(size=deriv_momenta.size)
+            noise = noise.reshape(deriv_momenta.shape)
         #print(noise.max(), noise.min())
-        deriv_momenta += noise
+            deriv_momenta += noise
         noise = self.random_dist.rvs(size=deriv_momenta[drunks].size)
         noise = noise.reshape(deriv_momenta[drunks].shape)
         deriv_momenta[drunks] += noise
