@@ -6,15 +6,17 @@ from math import sqrt, exp
 import numpy as np
 from scipy.integrate import solve_ivp
 import matplotlib.pyplot as plt
+from matplotlib.animation import FuncAnimation
 from scipy.stats import truncnorm
 from numba import jit, prange
 import numba
 from patches import circles
 from functools import partial
-
+from math import ceil, floor
+import pickle
 
 def convert_truncated_normal(a,b, std, mean=0):
-    return(a - mean) / std, (b - mean) / std
+    return (a - mean) / std, (b - mean) / std
 
 
 @jit((numba.float64[:], numba.float64[:], numba.float64), cache=True, nopython=True, parallel=False)
@@ -45,7 +47,7 @@ def _distance(position_1, position_2, corridor_length):
       numba.float64, numba.boolean, numba.float64, numba.float64[:, :]),
      cache=True, nopython=True, parallel=True)
 def _particle_particle_interaction(core_diameter,
-                                   in_core_force, param_factor, 
+                                   in_core_force, param_factor,
                                    param_exponent, param_epsilon, state_preparation, corridor_length, positions):
     output = np.zeros_like(positions)
     for ii in prange(positions.shape[0]):
@@ -66,7 +68,7 @@ def _particle_particle_interaction(core_diameter,
                     if state_preparation and (distance - core_diameter) < param_epsilon:
                         force += in_core_force
                     force *= param_factor * param_exponent
-                    
+
                 summed -= force * direction
         output[ii] = summed
     return output
@@ -109,8 +111,7 @@ def _walls(corridor_width, position):
     else:
         return distance_2, np.array([0, -1], dtype=np.float64)
 
-# [TODO: Check last time (mathematics)]
-# [TODO: add stochastics]
+# Disabled
 @jit((numba.float64, numba.float64, numba.float64, numba.float64, numba.float64,
       numba.float64, numba.float64, numba.uint, numba.float64, numba.float64,
       numba.float64, numba.float64[:]),
@@ -133,7 +134,7 @@ def _jacobian(param_factor, param_exponent, param_epsilon, core_diameter, partic
 
     block_first_arg_total = np.zeros((2,2))
     block_second_arg_total = np.zeros((2,2))
-    
+
     # iterate over 2-particle combinations
     for i in prange(n_positive):
         position_i = state1d[2 * i:2 * i + 2]
@@ -143,9 +144,9 @@ def _jacobian(param_factor, param_exponent, param_epsilon, core_diameter, partic
             if i != j:
                 # calculate useful terms that make up matrix elements
                 dist, direction = _distance(position_i, position_j, corridor_length)
-                
+
                 #print(dist, direction)
-                
+
                 if dist-D >= eps:
                     # attention, unusual definition (other way round)
 
@@ -167,9 +168,9 @@ def _jacobian(param_factor, param_exponent, param_epsilon, core_diameter, partic
                     df_ijdivdx_j = df_ijdivdx_i
                     df_ijdivdy_j = df_ijdivdy_i
 
-                    
+
                     # for convenience: write this in terms of 2x2 blocks
-                    
+
                     block_first_arg = np.zeros((2,2))
                     block_second_arg = np.zeros((2,2))
                     block_first_arg[:,0] = df_ijdivdx_i
@@ -179,26 +180,26 @@ def _jacobian(param_factor, param_exponent, param_epsilon, core_diameter, partic
 
                 # add contributions in sum form particles i, j
                 # this is done while iterating over i, j
-                
+
                 # the general idea is: jac3 depends on x_k only via f_ij
                 # -> there are only two kinds of contributions in here:
                 # for k = i, and k = j (called block_first_argument (first index the same) and block_second_arg (second equal))
                 # For given i and j calculate these and insert them into the right place
                 # this should be the most efficient way, because only one single (double) sum is used
-                
 
-            
+
+
                 # TODO: does not work in parallel: why???
                 jac3[2*i:2*i+2, 2*i:2*i+2] += block_first_arg
                 jac3[2*i:2*i+2, 2*j:2*j+2] += block_second_arg
-                
-                
+
+
 
     # quite similar
     for i in prange(n_positive):
         position = state1d[2 * i:2 * i + 2]
         dist_wall, direction = _walls(corridor_width, position)
-        
+
         if dist_wall >= eps:
 
             df_i_ydivdy_i = A * B * (B + 1) * (dist_wall - D / 2)**(-B - 2)
@@ -218,7 +219,7 @@ def _jacobian(param_factor, param_exponent, param_epsilon, core_diameter, partic
     jacobian[:blocksize, blocksize:] = jac2
     jacobian[blocksize:, :blocksize] = jac3
     jacobian[blocksize:, blocksize:] = jac4
-    
+
     return jacobian
 
 
@@ -251,7 +252,6 @@ class SimulationStraightCorridor:
         self.in_core_force = in_core_force
         self.n_drunk_positive = n_drunk_positive
         self.n_drunk_negative = n_drunk_negative
-        self.drunk_std = sqrt(drunkness)
         self.corridor_length = corridor_length
         self.corridor_width = corridor_width
         self.n_positive = n_positive
@@ -260,10 +260,10 @@ class SimulationStraightCorridor:
         self.state_preparation =state_preparation
 
         self.noise_std = sqrt(noise_variance)
-        self.max_noise_val = 3 * sqrt(self.noise_std)
+        self.max_noise_val = 3 * self.noise_std
 
         self.noise_std_drunk = sqrt(noise_variance_drunk)
-        self.max_noise_val_drunk = 3 * sqrt(self.noise_std_drunk)
+        self.max_noise_val_drunk = 3 * self.noise_std_drunk
 
         self._particle_particle_interaction = partial(
             _particle_particle_interaction, self.core_diameter,
@@ -283,7 +283,7 @@ class SimulationStraightCorridor:
                                  self.core_diameter, self.particle_mass,
              self.corridor_length, self.corridor_width, self.n_positive, self.in_core_force,
              self.relaxation_time)
-        
+
         # TODO: Problem: Noise changes direction so fast that there is no effect -> averages to zero
         # TODO: look at footnote in paper [13]
 
@@ -291,13 +291,13 @@ class SimulationStraightCorridor:
         if self.noise_std != 0:
             a, b = convert_truncated_normal(-self.max_noise_val, self.max_noise_val,
                                        self.noise_std)
-            self.random_dist = truncnorm(a, b)
+            self.random_dist = truncnorm(a, b, scale=self.noise_std)
 
-        self.random_dist = None
+        self.random_dist_drunk = None
         if self.noise_std_drunk != 0:
             a, b = convert_truncated_normal(-self.max_noise_val_drunk, self.max_noise_val_drunk,
                                             self.noise_std_drunk)
-            self.random_dist_drunk = truncnorm(a, b)
+            self.random_dist_drunk = truncnorm(a, b, scale=self.noise_std_drunk)
             
         if self.initial_state is None:
             self.n_particles = 2 * self.n_positive
@@ -373,7 +373,7 @@ class SimulationStraightCorridor:
             output[ii] = force * direction
         return output
 
-    def _calculate_momentum_derivative(self, old_momenta, old_positions):
+    def _calculate_momentum_derivative(self, old_momenta, old_positions, t):
         deriv_momenta = np.zeros_like(self.ode_left_hand_side[1, :, :])
         # only the particles with a positive v_0:
         particle_choice = slice(0, self.n_positive)
@@ -384,17 +384,13 @@ class SimulationStraightCorridor:
         particle_choice = slice(self.n_positive, self.n_particles)
         deriv_momenta[particle_choice] = self._particle_drive(
             old_momenta[particle_choice], -1)
-        # all particles:
-        drunks = slice(-self.n_drunk_negative, self.n_drunk_positive)
-        if self.max_noise_val != 0:
-            noise = self.random_dist.rvs(size=deriv_momenta.size)
-            noise = noise.reshape(deriv_momenta.shape)
-        #print(noise.max(), noise.min())
-            deriv_momenta += noise
-        if (self.n_drunk_positive + self.n_drunk_negative != 0) and (self.drunkness != 0): 
-            noise = self.random_dist_drunk.rvs(size=deriv_momenta[drunks].size)
-            noise = noise.reshape(deriv_momenta[drunks].shape)
-            deriv_momenta[drunks] += noise
+        # add noise:
+        if self.max_noise_val != 0 or self.max_noise_val_drunk != 0:
+           # print(int((t-self.integration_interval[0])/self.noise_step))
+           # print(self.noise.shape)
+            noise_at_time = self.noise[floor((t-self.integration_interval[0])/self.noise_step),:,:]
+        deriv_momenta += noise_at_time    
+            
         deriv_momenta += self._particle_particle_interaction(old_positions)
         deriv_momenta += self._particle_boundary_interaction(old_positions)
         #print(deriv_momenta.max(), deriv_momenta.min(), np.mean(deriv_momenta))
@@ -410,23 +406,46 @@ class SimulationStraightCorridor:
                                             / self.particle_mass)
         self.ode_left_hand_side[1, :, :] = \
             self._calculate_momentum_derivative(state_3d[1, :, :],
-                                                state_3d[0, :, :])
+                                                state_3d[0, :, :], _time)
         # Return the calculated derivatives in 1D:
         # Again no copy is made since the array is still C-contiguous.
 
         return np.ravel(self.ode_left_hand_side)
 
-    def run_simulation(self, integration_interval, use_jacobian=False, **kwargs):
+    def run_simulation(self, integration_interval, noise_step, use_jacobian=False, **kwargs):
         initial_state_1d = np.copy(np.ravel(self.initial_state))
+        
+        
+        noise_array_timesteps = ceil((integration_interval[1]-integration_interval[0])/noise_step)+1
+        
+        if self.random_dist is not None:
+            noise = self.random_dist.rvs(size=noise_array_timesteps*2*(self.n_particles))
+        else:
+            noise = np.zeros(noise_array_timesteps*2*(self.n_particles))
+            
+        noise = noise.reshape((noise_array_timesteps, self.n_particles, 2))
+         
+        if self.random_dist_drunk is not None:    
+            noise_drunk = self.random_dist_drunk.rvs(size= noise_array_timesteps*2*(self.n_drunk_negative+self.n_drunk_positive))
+            noise_drunk = noise_drunk.reshape((noise_array_timesteps, (self.n_drunk_negative+self.n_drunk_positive), 2))
+            noise[:,:self.n_drunk_positive,:] =  noise_drunk[:,:self.n_drunk_positive,:] 
+            noise[:,self.n_positive:self.n_positive+self.n_drunk_negative,:] =  noise_drunk[:,self.n_drunk_positive:,:] 
+            
+
+        self.noise = noise
+        self.noise_step = noise_step
+        self.noise_array_timesteps = noise_array_timesteps
+        self.integration_interval = integration_interval
+        
         if use_jacobian: 
             output = solve_ivp(self._ode_system, integration_interval,
-                               initial_state_1d, 
-                               jac=self._jacobian, 
+                               initial_state_1d,
+                               jac=self._jacobian,
                                **kwargs)
         else:
             output = solve_ivp(self._ode_system, integration_interval,
-                               initial_state_1d,  
-                               **kwargs)            
+                               initial_state_1d,
+                               **kwargs)
         self.simulation_succeeded = output.success
         self.nfev = output.nfev
         self.njev = output.njev
@@ -441,13 +460,12 @@ class SimulationStraightCorridor:
                 self.states[:, ii] = np.ravel(state_3d)
         else:
             print('no success', output.status, output.message)
-        # One can also try the continuous solution.
         
         self.calculate_motion_efficiencies()
-      #  self.calculate_total_energies()
+        self.calculate_total_energies()
 
-    def plot_initial_state(self):
-        fig, ax = plt.subplots()
+    def _initialize_animation(self):
+        fig, ax = plt.gcf(), plt.gca()
         ax.set_xlim(-0.5, self.corridor_length + 0.5)
         ax.set_ylim(-.05, self.corridor_width + 0.5)
         plt.axis('equal')
@@ -457,13 +475,45 @@ class SimulationStraightCorridor:
         positions = self.initial_state[0, :, :]
         positive = slice(0, self.n_positive)
         negative = slice(self.n_positive, self.n_particles)
-        circles(positions[positive, 0], positions[positive, 1],
-                self.core_diameter/2, c='red', axis=ax)
-        circles(positions[negative, 0], positions[negative, 1],
-                self.core_diameter/2, c='blue', axis=ax)
+        not_static = [0, 0]
+        not_static[0] = circles(positions[positive, 0], positions[positive, 1],
+                                self.core_diameter/2, c='red', axis=ax)
+        not_static[0] = circles(positions[negative, 0], positions[negative, 1],
+                                self.core_diameter/2, c='blue', axis=ax)
+        fig.canvas.draw()
+        return not_static
+
+    def plot_initial_state(self):
+        fig, ax = plt.subplots(1)
+        self._initialize_animation()
         fig.canvas.draw()
 
-    def animate(self, scale):
+    def update_plot(self, ii):
+        fig, ax = plt.gcf(), plt.gca()
+        ax.collections.pop(1)
+        ax.collections.pop(2)
+        ax.hlines([0, self.corridor_width],
+                  0, self.corridor_length)
+        state_3d = self.states[:, ii].reshape(self.initial_state.shape)
+        positions = state_3d[0, :, :]
+        positive = slice(0, self.n_positive)
+        negative = slice(self.n_positive, self.n_particles)
+        circles(positions[positive, 0], positions[positive, 1],
+                          self.core_diameter / 2, c='red', axis=ax)
+        circles(positions[negative, 0], positions[negative, 1],
+                          self.core_diameter / 2, c='blue', axis=ax)
+
+    def animate(self):
+        fig, ax = plt.subplots(1)
+        self.animation = FuncAnimation(fig, self.update_plot,
+                                  frames=self.times.size,
+                                  init_func=self._initialize_animation,
+                                  blit=False)
+
+    def save_animation(self, file_name, **kwargs):
+        self.animation.save(file_name, **kwargs)
+
+    def old_animate(self, scale):
         # TODO: export as Video/play in Realtime (is too slow this way)
         fig, ax = plt.subplots()
         ax.set_xlim(-0.5, self.corridor_length + 0.5)
@@ -472,6 +522,7 @@ class SimulationStraightCorridor:
         ax.hlines([0, self.corridor_width],
                   0, self.corridor_length)
         t_0 = 0.00001
+
         positions = self.initial_state[0, :, :]
         positive = slice(0, self.n_positive)
         negative = slice(self.n_positive, self.n_particles)
@@ -492,7 +543,6 @@ class SimulationStraightCorridor:
             circles(positions[negative, 0], positions[negative, 1],
                     self.core_diameter/2, c='blue', axis=ax)
             fig.canvas.draw()
-            #print(ii)
             try:
                 plt.pause(abs((self.times[ii + 1] - t))
                           / scale - (start_time - time.time()))
@@ -500,7 +550,7 @@ class SimulationStraightCorridor:
                 pass
         return fig, ax
 
-    # TODO: does not work
+
     def calculate_total_energies(self):
         if self.simulation_succeeded:
             positions = self.states[:self.n_particles*2,:] 
@@ -515,25 +565,24 @@ class SimulationStraightCorridor:
                 for i in range(self.n_particles):
                     for j in range(self.n_particles):
                         if i != j:
-#                            print(positions[2*i:2*i+2,k])
                             dist = _distance(positions[2*i:2*i+2,k], positions[2*j:2*j+2,k], self.corridor_length)[0]
                             E_pot[k] += 1/2 * self.param_factor * (dist - self.core_diameter)**(-self.param_exponent)
-            
+
             self.total_energies_at_time = E_pot + E_kin
             self.total_energies = np.sum(E_pot + E_kin)/(positions.shape[1])
-            
-        
-        
+
+
+
     def calculate_motion_efficiencies(self):
         if self.simulation_succeeded:
-            
+
             velocities_eff = self.states[self.n_particles*2::2,:]/(self.particle_mass*self.desired_speed)
             velocities_eff[self.n_positive:,:] = - velocities_eff[self.n_positive:,:]
             self.efficiencies = np.sum(velocities_eff/velocities_eff.size)
             self.efficiencies_at_time = np.sum(velocities_eff/self.n_particles,axis=0)
 
-        
-        
+
+
     def plot_efficiencies(self):
         # TODO: plot self.efficiencies_in_time
         ...
@@ -541,3 +590,7 @@ class SimulationStraightCorridor:
     def plot_total_energies(self):
         # TODO: plot self.efficiencies_in_time
         ...
+
+    def save_simulation_data(self, file_name):
+        with open(file_name, 'wb') as file:
+            pickle.dump(self, file)
