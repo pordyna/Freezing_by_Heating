@@ -284,8 +284,7 @@ class SimulationStraightCorridor:
              self.corridor_length, self.corridor_width, self.n_positive, self.in_core_force,
              self.relaxation_time)
 
-        # TODO: Problem: Noise changes direction so fast that there is no effect -> averages to zero
-        # TODO: look at footnote in paper [13]
+
 
         self.random_dist = None
         if self.noise_std != 0:
@@ -465,23 +464,12 @@ class SimulationStraightCorridor:
         self.calculate_total_energies()
 
     def _initialize_animation(self):
-        fig, ax = plt.gcf(), plt.gca()
-        ax.set_xlim(-0.5, self.corridor_length + 0.5)
-        ax.set_ylim(-.05, self.corridor_width + 0.5)
+        self.ax.set_xlim(-0.5, self.corridor_length + 0.5)
+        self.ax.set_ylim(-0.5, self.corridor_width + 0.5)
         plt.axis('equal')
-        ax.hlines([0, self.corridor_width],
+        self.ax.hlines([0, self.corridor_width],
                   0, self.corridor_length)
-        t_0 = 0.00001
-        positions = self.initial_state[0, :, :]
-        positive = slice(0, self.n_positive)
-        negative = slice(self.n_positive, self.n_particles)
-        not_static = [0, 0]
-        not_static[0] = circles(positions[positive, 0], positions[positive, 1],
-                                self.core_diameter/2, c='red', axis=ax)
-        not_static[0] = circles(positions[negative, 0], positions[negative, 1],
-                                self.core_diameter/2, c='blue', axis=ax)
-        fig.canvas.draw()
-        return not_static
+        # fig.canvas.draw()
 
     def plot_initial_state(self):
         fig, ax = plt.subplots(1)
@@ -489,25 +477,23 @@ class SimulationStraightCorridor:
         fig.canvas.draw()
 
     def update_plot(self, ii):
-        fig, ax = plt.gcf(), plt.gca()
-        ax.collections.pop(1)
-        ax.collections.pop(2)
-        ax.hlines([0, self.corridor_width],
-                  0, self.corridor_length)
+        if ii != 0:
+            self.ax.collections.pop(1)
+            self.ax.collections.pop(2)
         state_3d = self.states[:, ii].reshape(self.initial_state.shape)
         positions = state_3d[0, :, :]
         positive = slice(0, self.n_positive)
         negative = slice(self.n_positive, self.n_particles)
         circles(positions[positive, 0], positions[positive, 1],
-                          self.core_diameter / 2, c='red', axis=ax)
+                          self.core_diameter / 2, c='red', axis=self.ax)
         circles(positions[negative, 0], positions[negative, 1],
-                          self.core_diameter / 2, c='blue', axis=ax)
+                          self.core_diameter / 2, c='blue', axis=self.ax)
 
-    def animate(self):
-        fig, ax = plt.subplots(1)
-        self.animation = FuncAnimation(fig, self.update_plot,
-                                  frames=self.times.size,
-                                  init_func=self._initialize_animation,
+    def animate(self, interval):
+        self.fig, self.ax = plt.subplots(1)
+
+        self.animation = FuncAnimation(self.fig, self.update_plot, interval=interval,
+                                  frames=self.times.size, init_func=self._initialize_animation,
                                   blit=False)
 
     def save_animation(self, file_name, **kwargs):
@@ -581,15 +567,55 @@ class SimulationStraightCorridor:
             self.efficiencies = np.sum(velocities_eff/velocities_eff.size)
             self.efficiencies_at_time = np.sum(velocities_eff/self.n_particles,axis=0)
 
-
-
+        
+        
     def plot_efficiencies(self):
-        # TODO: plot self.efficiencies_in_time
-        ...
+
+        font = {'family': 'serif',
+                'color':  'darkred',
+                'weight': 'normal',
+                'size': 16,
+                }
+
+        font2 = {'family': 'serif',
+                'color':  'black',
+                'weight': 'normal',
+                'size': 12,
+                }
+
+        fig, ax = plt.subplots()
+        ax.plot(self.times, self.efficiencies_at_time, "-r")
+        ax.set_xlim(self.times[0], self.times[-1])
+        ax.set_ylim(0, max(self.efficiencies_at_time))
+        ax.hlines([self.efficiencies], self.times[0], self.times[-1])
+        plt.title('Efficiency of Motion', fontdict=font)
+        plt.text(10, 0.05,'mean value = {:.2}'.format(self.efficiencies), fontdict=font2)
+        plt.xlabel('time $t$ (s)', fontdict=font)
+        plt.ylabel('efficiency $E$', fontdict=font)
 
     def plot_total_energies(self):
-        # TODO: plot self.efficiencies_in_time
-        ...
+
+        font = {'family': 'serif',
+                'color':  'darkred',
+                'weight': 'normal',
+                'size': 16,
+                }
+
+        font2 = {'family': 'serif',
+                'color':  'black',
+                'weight': 'normal',
+                'size': 12,
+                }
+
+        fig, ax = plt.subplots()
+        ax.plot(self.times, self.total_energies_at_time, "-r")
+        ax.set_xlim(self.times[0], self.times[-1])
+        ax.set_ylim(0, max(self.total_energies_at_time))
+        ax.hlines([self.total_energies], self.times[0], self.times[-1])
+        plt.title('Total Energies', fontdict=font)
+        plt.text(10, 5,'mean value = {:.2}'.format(self.efficiencies), fontdict=font2)
+        plt.xlabel('time $t$ (s)', fontdict=font)
+        plt.ylabel('energy $W$', fontdict=font)
 
     def save_simulation_data(self, file_name):
         with open(file_name, 'wb') as file:
